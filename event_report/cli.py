@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--setup", action="store_true", help="初回セットアップ(フォルダ作成とAPIキーの登録)")
     parser.add_argument("--video", type=Path, help="指定した動画1本だけを処理する")
     parser.add_argument("--youtube", action="store_true", help="YouTubeのURLを対話的に入力して処理する")
+    parser.add_argument("--youtube-audio", action="store_true", help="YouTubeのURLを対話的に入力し、音声(MP3)だけを保存する")
+    parser.add_argument("--audio-url", help="指定したYouTubeのURLから音声(MP3)だけを保存する")
     parser.add_argument("--url", help="指定したYouTubeのURLを処理する")
     parser.add_argument("--name", help="--url と一緒に使う: レポートの名前(省略時はYouTubeのタイトル)")
     parser.add_argument("--force", action="store_true", help="作成済みのレポートも作り直す(文字起こしは再利用)")
@@ -34,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
 def ensure_folders() -> None:
     config.VIDEO_DIR.mkdir(exist_ok=True)
     config.REPORT_DIR.mkdir(exist_ok=True)
+    config.AUDIO_DIR.mkdir(exist_ok=True)
 
 
 def load_settings_interactively() -> config.Settings:
@@ -60,6 +63,8 @@ def describe_error(error: Exception) -> str:
         if error.status_code == 401:
             return f"ElevenLabs のAPIキーが正しくないか、利用枠が不足しています。.env の ELEVENLABS_API_KEY と契約プランを確認してください。\n{error.body}"
         return f"ElevenLabs APIでエラーが発生しました(status {error.status_code}): {error.body}"
+    if isinstance(error, youtube.YouTubeError):
+        return str(error)
     if isinstance(error, httpx.HTTPError):
         return f"文字起こしサービスに接続できませんでした。インターネット接続を確認してください。({error})"
     return str(error)
@@ -89,6 +94,20 @@ def video_jobs(settings: config.Settings, video: Path | None, force: bool) -> li
         (v.name, lambda v=v: process_video(v, settings, config.REPORT_DIR, config.WRITING_GUIDE_PATH, force=force))
         for v in videos
     ]
+
+
+def save_youtube_audio(urls: list[str]) -> int:
+    """APIキー不要。URLの音声をMP3にして音声フォルダへ保存する。"""
+    jobs: list[Job] = []
+    for url in urls:
+        if not youtube.is_youtube_url(url):
+            print(f"× YouTubeのURLではないためスキップします: {url}")
+            continue
+        jobs.append((url, lambda url=url: youtube.download_audio(url, config.AUDIO_DIR)))
+    if not jobs:
+        print("\n処理できるURLがありませんでした。上のメッセージを確認してください。")
+        return 1
+    return run_jobs(jobs)
 
 
 def ask_urls() -> list[str]:
@@ -128,6 +147,13 @@ def youtube_jobs(settings: config.Settings, urls: list[str], name: str | None, i
 
 def run(args: argparse.Namespace) -> int:
     ensure_folders()
+    if args.youtube_audio or args.audio_url:
+        urls = [args.audio_url] if args.audio_url else ask_urls()
+        if not urls:
+            print("URLが入力されなかったので終了します。")
+            return 0
+        return save_youtube_audio(urls)
+
     settings = load_settings_interactively()
 
     if args.youtube or args.url:
@@ -153,10 +179,11 @@ def setup() -> int:
     try:
         config.load_settings()
     except config.MissingKeysError as e:
-        config.ask_and_save_keys(e.missing)
+        print("レポート作成機能で使うAPIキーを登録します。")
+        print("(YouTubeから音声を保存するだけなら不要です。その場合は何も入力せずにEnter)")
+        config.ask_and_save_keys(e.missing, allow_skip=True)
     print("\nセットアップが完了しました。")
-    print(f"「{config.VIDEO_DIR.name}」に動画を入れて「2_レポート作成」を、")
-    print("YouTubeの動画からは「3_YouTubeから作成」をダブルクリックしてください。")
+    print("YouTubeの音声を保存するには「4_YouTubeから音声を保存」をダブルクリックしてください。")
     return 0
 
 

@@ -21,6 +21,8 @@ INCLUDE = [
     "2_レポート作成_Mac.command",
     "3_YouTubeから作成_Windows.bat",
     "3_YouTubeから作成_Mac.command",
+    "4_YouTubeから音声を保存_Windows.bat",
+    "4_YouTubeから音声を保存_Mac.command",
     "使い方.txt",
     "レポートの書き方.md",
     "pyproject.toml",
@@ -28,7 +30,7 @@ INCLUDE = [
     ".python-version",
     ".env.example",
 ]
-EMPTY_DIRS = ["動画フォルダ", "レポート出力"]
+EMPTY_DIRS = ["動画フォルダ", "レポート出力", "音声フォルダ"]
 
 
 def build(with_env: bool) -> Path:

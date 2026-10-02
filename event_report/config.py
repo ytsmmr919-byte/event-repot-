@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT / ".env"
 VIDEO_DIR = ROOT / "動画フォルダ"
 REPORT_DIR = ROOT / "レポート出力"
+AUDIO_DIR = ROOT / "音声フォルダ"
 WRITING_GUIDE_PATH = ROOT / "レポートの書き方.md"
 
 DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
@@ -47,12 +48,15 @@ def load_settings() -> Settings:
     )
 
 
-def ask_and_save_keys(names: list[str]) -> None:
+def ask_and_save_keys(names: list[str], allow_skip: bool = False) -> None:
     """不足しているAPIキーを対話的に入力してもらい、.envに保存する。"""
     ENV_PATH.touch(exist_ok=True)
     for name in names:
         value = ""
         while not value:
             value = input(f"{API_KEYS[name]}を貼り付けてEnterを押してください: ").strip()
-        set_key(str(ENV_PATH), name, value, quote_mode="never")
-        os.environ[name] = value
+            if not value and allow_skip:
+                break
+        if value:
+            set_key(str(ENV_PATH), name, value, quote_mode="never")
+            os.environ[name] = value
