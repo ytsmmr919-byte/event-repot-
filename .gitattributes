@@ -1,0 +1,3 @@
+*.bat text eol=crlf
+*.command text eol=lf
+使い方.txt text eol=crlf

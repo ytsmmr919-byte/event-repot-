@@ -1,38 +1,76 @@
-"""動画ファイル→文字起こし→イベントレポートの一連の処理をつなぐ。"""
+"""動画1本ぶんの処理: 音声抽出 → 文字起こし → レポート作成 → 保存。"""
 from __future__ import annotations
 
-from datetime import datetime
+import tempfile
 from pathlib import Path
 
-from .plaud_client import PlaudClient
-from .report_generator import generate_report, render_prompt
+from . import audio, report, transcribe
+from .config import Settings
+
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".wmv", ".webm", ".mts", ".m2ts",
+    ".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg",
+}
+
+REPORT_FILENAME = "レポート.md"
+TRANSCRIPT_TEXT_FILENAME = "文字起こし.txt"
+TRANSCRIPT_JSON_FILENAME = "transcript.json"
 
 
-def run(
+def read_text_file(path: Path) -> str:
+    """スタッフが編集するテキストを読む。古いメモ帳のShift_JIS保存にも対応する。"""
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp932", errors="replace")
+
+
+def find_videos(video_dir: Path) -> list[Path]:
+    return sorted(
+        p for p in video_dir.iterdir()
+        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in VIDEO_EXTENSIONS
+    )
+
+
+def process_video(
     video_path: Path,
-    prompt_template_path: Path,
-    output_dir: Path,
-    title: str | None = None,
-) -> Path:
-    if not video_path.exists():
-        raise FileNotFoundError(f"動画ファイルが見つかりません: {video_path}")
-    if not prompt_template_path.exists():
-        raise FileNotFoundError(f"プロンプトテンプレートが見つかりません: {prompt_template_path}")
+    settings: Settings,
+    report_root: Path,
+    writing_guide_path: Path,
+    force: bool = False,
+) -> Path | None:
+    """レポートを作成して保存先を返す。作成済みでスキップした場合はNone。"""
+    out_dir = report_root / video_path.stem
+    report_path = out_dir / REPORT_FILENAME
+    if report_path.exists() and not force:
+        print(f"  作成済みのためスキップ: {report_path.relative_to(report_root.parent)}")
+        return None
 
-    report_title = title or video_path.stem
+    transcript_json = out_dir / TRANSCRIPT_JSON_FILENAME
+    if transcript_json.exists():
+        print("  [1/2] 前回の文字起こし結果を再利用します")
+        transcript = transcribe.Transcript.load_json(transcript_json)
+    else:
+        print("  [1/2] 文字起こし中…(1時間の動画で数分かかります)")
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = audio.extract_audio(video_path, Path(tmp) / "audio.m4a")
+            transcript = transcribe.transcribe(audio_path, settings.elevenlabs_api_key)
+        if not transcript.segments:
+            raise RuntimeError("音声から発言を検出できませんでした。")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        transcript.save_json(transcript_json)
+        (out_dir / TRANSCRIPT_TEXT_FILENAME).write_text(transcript.to_text() + "\n", encoding="utf-8")
 
-    print(f"[1/3] Plaud APIで文字起こし中... ({video_path.name})")
-    client = PlaudClient()
-    transcript = client.transcribe(video_path)
-
-    print("[2/3] Claude APIでレポートを生成中...")
-    prompt = render_prompt(prompt_template_path, transcript, report_title)
-    report_markdown = generate_report(prompt)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"{video_path.stem}_{timestamp}.md"
-    output_path.write_text(report_markdown, encoding="utf-8")
-
-    print(f"[3/3] レポートを保存しました: {output_path}")
-    return output_path
+    print("  [2/2] レポート作成中…")
+    memo_path = video_path.with_suffix(".txt")
+    event_memo = read_text_file(memo_path) if memo_path.exists() else ""
+    user_message = report.build_user_message(
+        transcript_text=transcript.to_text(),
+        writing_guide=read_text_file(writing_guide_path),
+        event_memo=event_memo,
+        video_name=video_path.name,
+    )
+    report_text = report.generate_report(user_message, settings.anthropic_api_key, settings.claude_model)
+    report_path.write_text(report_text, encoding="utf-8")
+    return report_path

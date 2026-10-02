@@ -1,11 +1,10 @@
 __pycache__/
 *.pyc
 .env
-input/*
-!input/.gitkeep
-output/*
-!output/.gitkeep
 .venv/
-venv/
-*.egg-info/
 .pytest_cache/
+dist/
+動画フォルダ/*
+!動画フォルダ/.gitkeep
+レポート出力/*
+!レポート出力/.gitkeep
