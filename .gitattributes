@@ -1,3 +1,4 @@
 *.bat text eol=crlf
 *.command text eol=lf
 使い方.txt text eol=crlf
+StreamYardからPlaudへの手順.txt text eol=crlf
