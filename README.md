@@ -1,6 +1,9 @@
 # イベントレポート作成ツール
 
-イベント動画を「動画フォルダ」に入れてダブルクリックすると、話者分離つきの文字起こしとイベントレポート(Markdown)を作成するツールです。スタッフ各自のPC(Windows / Mac)で動かす前提で作っています。
+StreamYardで配信したイベントの動画から、話者分離つきの文字起こしとイベントレポート(Markdown)を作成するツールです。スタッフ各自のPC(Windows / Mac)で、ダブルクリックで動かす前提で作っています。
+
+- **YouTubeに配信した場合**: 「3_YouTubeから作成」でURLを貼るだけ(動画のダウンロード不要)
+- **それ以外**: StreamYardから録画をダウンロードして「動画フォルダ」に入れ、「2_レポート作成」
 
 - スタッフ向けの手順は [`使い方.txt`](使い方.txt) を参照してください(配布zipにも同梱されます)
 - このREADMEは管理者・開発者向けです
@@ -8,9 +11,10 @@
 ## 仕組み
 
 ```
-動画フォルダ/春の交流会.mp4
-   │ ① 音声を取り出す(同梱のffmpeg、モノラル16kHz・1時間で約20MB)
-   ▼
+動画フォルダ/春の交流会.mp4                YouTubeのURL(公開/限定公開)
+   │ ① 音声を取り出す                          │ ① タイトル取得(非公開ならここで止める)
+   │   (同梱ffmpeg・1時間で約20MB)            │   URLをそのままElevenLabsへ渡す
+   ▼                                           ▼
 ElevenLabs Speech to Text(Scribe v2)…日本語の文字起こし+話者分離
    │ ② 「話者1」「話者2」…ごとに発言をまとめる
    ▼
@@ -35,6 +39,15 @@ Claude API(claude-opus-5-5)…「レポートの書き方.md」+ 動画ごとの
 - **Google Cloud Speech-to-Text** — 長時間音声の話者分離にはCloud Storageのバケットやサービスアカウントの用意が必要で、スタッフPCで使うには準備が重いため
 - **OpenAI(Whisper / gpt-4o-transcribe-diarize)** — 1ファイル25MBの上限があり、1時間超の動画は分割が必要。分割すると話者ラベルがファイルをまたいで一致しなくなるため
 - **AssemblyAI** — 日本語の話者分離に対応しており有力な代替候補。ElevenLabsに問題があれば `event_report/transcribe.py` だけ差し替えれば移行できます
+
+## StreamYardとの連携について
+
+StreamYardには公開APIがなく、Zapier連携のトリガーも配信の作成・更新などに限られるため、**StreamYardのストレージから録画を自動で取り出すことはできません**(2026年10月時点)。そこで次の2通りにしています。
+
+1. **YouTubeにも配信する(推奨)** — 配信のアーカイブがYouTubeに残るので、ElevenLabsの `source_url` にYouTubeのURLを渡して文字起こしします。ダウンロードはElevenLabs側で行われるため、スタッフPCには動画が残りません。YouTubeの公開設定は「公開」か「限定公開」が必要です(「非公開」はElevenLabsから読めません)。処理前にYouTubeのoEmbedでタイトルを取得し、非公開・削除済みならその時点で止めるので、無駄な課金は発生しません
+2. **ダウンロードして使う** — Facebook・LinkedInのみの配信や非公開にした場合は、StreamYardのライブラリから録画(音声のみで可)をダウンロードして「動画フォルダ」へ
+
+将来、配信終了から完全自動でレポートを作りたい場合は、YouTubeチャンネルの新着(RSS)を定期的に確認してこのツールの `--url` を呼ぶ仕組みを、GitHub Actionsの定期実行などで追加できます。
 
 ### 費用の目安(1時間の動画1本あたり)
 
@@ -66,12 +79,12 @@ uv run python tools/make_dist.py
 2. `uv sync` でPython 3.12と依存ライブラリを、このフォルダ内の `.venv` に入れる(PCにPythonが入っていなくてもよい)
 3. APIキーを聞いて `.env` に保存する
 
-インターネット接続(astral.sh・github.com・pypi.org、実行時は api.elevenlabs.io・api.anthropic.com)が必要です。
+インターネット接続(astral.sh・github.com・pypi.org、実行時は api.elevenlabs.io・api.anthropic.com・www.youtube.com)が必要です。
 
 ## カスタマイズ
 
 - **全レポート共通の文体・構成**: `レポートの書き方.md` を編集
-- **動画ごとの情報(話者名・イベント名・追加指示)**: 動画と同名の `.txt` を動画フォルダに置く
+- **動画ごとの情報(話者名・イベント名・追加指示)**: レポート名(動画ファイル名、またはYouTubeで入力した名前)と同名の `.txt` を動画フォルダに置く
 - **Claudeのモデル**: `.env` に `CLAUDE_MODEL=claude-sonnet-5-5` などと書くと変更できます(既定は `claude-opus-5-5`)
 - **AIへの共通指示(誤変換の扱い、話者ラベルの扱いなど)**: `event_report/report.py` の `SYSTEM_PROMPT`
 
@@ -81,14 +94,16 @@ uv run python tools/make_dist.py
 uv sync          # 開発用(pytest含む)
 uv run pytest    # テスト
 uv run python -m event_report --help
+uv run python -m event_report --url https://youtu.be/xxxx --name 春の交流会   # 対話なしでURLから作成
 ```
 
 | ファイル | 役割 |
 |---|---|
-| `event_report/cli.py` | 入口。動画フォルダの未処理動画を順に処理し、エラーをスタッフ向けの文言にする |
-| `event_report/pipeline.py` | 動画1本の処理(スキップ判定、文字起こし再利用、保存) |
+| `event_report/cli.py` | 入口。動画フォルダの未処理動画/入力されたYouTube URLを順に処理し、エラーをスタッフ向けの文言にする |
+| `event_report/pipeline.py` | 1件の処理(スキップ判定、文字起こし再利用、保存)。動画ファイルとURLで共通 |
+| `event_report/youtube.py` | YouTube URLの判定、oEmbedでのタイトル取得(非公開の検出)、フォルダ名への変換 |
 | `event_report/audio.py` | 同梱ffmpegでの音声抽出 |
-| `event_report/transcribe.py` | ElevenLabs呼び出しと、単語→話者ごとの発言への組み立て |
+| `event_report/transcribe.py` | ElevenLabs呼び出し(ファイル/URL)と、単語→話者ごとの発言への組み立て |
 | `event_report/report.py` | Claude呼び出し(ストリーミング、拒否時のサーバー側フォールバック) |
 | `event_report/config.py` | フォルダ構成、`.env` の読み書き |
 | `tools/make_dist.py` | 配布zipの作成 |

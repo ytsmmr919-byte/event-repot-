@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 from . import audio, report, transcribe
 from .config import Settings
@@ -40,8 +41,57 @@ def process_video(
     writing_guide_path: Path,
     force: bool = False,
 ) -> Path | None:
-    """レポートを作成して保存先を返す。作成済みでスキップした場合はNone。"""
-    out_dir = report_root / video_path.stem
+    """手元の動画ファイルからレポートを作成する。作成済みでスキップした場合はNone。"""
+    def run_transcription() -> transcribe.Transcript:
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = audio.extract_audio(video_path, Path(tmp) / "audio.m4a")
+            return transcribe.transcribe(audio_path, settings.elevenlabs_api_key)
+
+    return create_report(
+        name=video_path.stem,
+        source_label=video_path.name,
+        memo_path=video_path.with_suffix(".txt"),
+        run_transcription=run_transcription,
+        settings=settings,
+        report_root=report_root,
+        writing_guide_path=writing_guide_path,
+        force=force,
+    )
+
+
+def process_url(
+    url: str,
+    name: str,
+    settings: Settings,
+    report_root: Path,
+    writing_guide_path: Path,
+    memo_dir: Path,
+    force: bool = False,
+) -> Path | None:
+    """YouTubeなどのURLからレポートを作成する。動画のダウンロードはElevenLabs側で行われる。"""
+    return create_report(
+        name=name,
+        source_label=url,
+        memo_path=memo_dir / f"{name}.txt",
+        run_transcription=lambda: transcribe.transcribe_url(url, settings.elevenlabs_api_key),
+        settings=settings,
+        report_root=report_root,
+        writing_guide_path=writing_guide_path,
+        force=force,
+    )
+
+
+def create_report(
+    name: str,
+    source_label: str,
+    memo_path: Path,
+    run_transcription: Callable[[], transcribe.Transcript],
+    settings: Settings,
+    report_root: Path,
+    writing_guide_path: Path,
+    force: bool = False,
+) -> Path | None:
+    out_dir = report_root / name
     report_path = out_dir / REPORT_FILENAME
     if report_path.exists() and not force:
         print(f"  作成済みのためスキップ: {report_path.relative_to(report_root.parent)}")
@@ -53,9 +103,7 @@ def process_video(
         transcript = transcribe.Transcript.load_json(transcript_json)
     else:
         print("  [1/2] 文字起こし中…(1時間の動画で数分かかります)")
-        with tempfile.TemporaryDirectory() as tmp:
-            audio_path = audio.extract_audio(video_path, Path(tmp) / "audio.m4a")
-            transcript = transcribe.transcribe(audio_path, settings.elevenlabs_api_key)
+        transcript = run_transcription()
         if not transcript.segments:
             raise RuntimeError("音声から発言を検出できませんでした。")
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -63,13 +111,12 @@ def process_video(
         (out_dir / TRANSCRIPT_TEXT_FILENAME).write_text(transcript.to_text() + "\n", encoding="utf-8")
 
     print("  [2/2] レポート作成中…")
-    memo_path = video_path.with_suffix(".txt")
     event_memo = read_text_file(memo_path) if memo_path.exists() else ""
     user_message = report.build_user_message(
         transcript_text=transcript.to_text(),
         writing_guide=read_text_file(writing_guide_path),
         event_memo=event_memo,
-        video_name=video_path.name,
+        video_name=source_label,
     )
     report_text = report.generate_report(user_message, settings.anthropic_api_key, settings.claude_model)
     report_path.write_text(report_text, encoding="utf-8")

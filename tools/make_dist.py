@@ -19,6 +19,8 @@ INCLUDE = [
     "1_初回セットアップ_Mac.command",
     "2_レポート作成_Windows.bat",
     "2_レポート作成_Mac.command",
+    "3_YouTubeから作成_Windows.bat",
+    "3_YouTubeから作成_Mac.command",
     "使い方.txt",
     "レポートの書き方.md",
     "pyproject.toml",

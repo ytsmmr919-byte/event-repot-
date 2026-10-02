@@ -1,25 +1,32 @@
-"""コマンドの入口。通常は「レポート作成」のダブルクリックから引数なしで呼ばれる。"""
+"""コマンドの入口。通常は各「…_Windows.bat」「…_Mac.command」のダブルクリックから呼ばれる。"""
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Callable
 
 import anthropic
 import httpx
 from elevenlabs.core.api_error import ApiError as ElevenLabsApiError
 
-from . import config
-from .pipeline import find_videos, process_video
+from . import config, youtube
+from .pipeline import find_videos, process_url, process_video
+
+Job = tuple[str, Callable[[], "Path | None"]]
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="event_report",
-        description="「動画フォルダ」の動画を文字起こしし、「レポート出力」にイベントレポートを作成します。",
+        description="動画を文字起こしし、「レポート出力」にイベントレポートを作成します。"
+                    "引数なしで実行すると「動画フォルダ」の動画を処理します。",
     )
     parser.add_argument("--setup", action="store_true", help="初回セットアップ(フォルダ作成とAPIキーの登録)")
     parser.add_argument("--video", type=Path, help="指定した動画1本だけを処理する")
+    parser.add_argument("--youtube", action="store_true", help="YouTubeのURLを対話的に入力して処理する")
+    parser.add_argument("--url", help="指定したYouTubeのURLを処理する")
+    parser.add_argument("--name", help="--url と一緒に使う: レポートの名前(省略時はYouTubeのタイトル)")
     parser.add_argument("--force", action="store_true", help="作成済みのレポートも作り直す(文字起こしは再利用)")
     return parser
 
@@ -58,21 +65,14 @@ def describe_error(error: Exception) -> str:
     return str(error)
 
 
-def run(video: Path | None, force: bool) -> int:
-    ensure_folders()
-    settings = load_settings_interactively()
-
-    videos = [video] if video else find_videos(config.VIDEO_DIR)
-    if not videos:
-        print(f"「{config.VIDEO_DIR.name}」に動画がありません。動画を入れてから、もう一度実行してください。")
-        return 0
-
+def run_jobs(jobs: list[Job]) -> int:
+    """1件失敗しても残りは処理を続ける。"""
     failures = 0
-    for index, video_path in enumerate(videos, start=1):
-        print(f"\n({index}/{len(videos)}) {video_path.name}")
+    for index, (label, job) in enumerate(jobs, start=1):
+        print(f"\n({index}/{len(jobs)}) {label}")
         try:
-            report_path = process_video(video_path, settings, config.REPORT_DIR, config.WRITING_GUIDE_PATH, force=force)
-        except Exception as e:  # 1本失敗しても残りの動画は処理を続ける
+            report_path = job()
+        except Exception as e:
             failures += 1
             print(f"  × 失敗しました: {describe_error(e)}")
             continue
@@ -83,6 +83,71 @@ def run(video: Path | None, force: bool) -> int:
     return 1 if failures else 0
 
 
+def video_jobs(settings: config.Settings, video: Path | None, force: bool) -> list[Job]:
+    videos = [video] if video else find_videos(config.VIDEO_DIR)
+    return [
+        (v.name, lambda v=v: process_video(v, settings, config.REPORT_DIR, config.WRITING_GUIDE_PATH, force=force))
+        for v in videos
+    ]
+
+
+def ask_urls() -> list[str]:
+    print("YouTubeの動画URLを貼り付けてEnterを押してください。")
+    print("(複数ある場合は1行に1つずつ。全部入力したら、何も入力せずにEnter)")
+    urls = []
+    while url := input("URL: ").strip():
+        urls.append(url)
+    return urls
+
+
+def youtube_jobs(settings: config.Settings, urls: list[str], name: str | None, interactive: bool, force: bool) -> list[Job]:
+    """文字起こしを始める前に、全URLの確認と名前決めを済ませる(途中で入力待ちにならないように)。"""
+    jobs: list[Job] = []
+    for url in urls:
+        if not youtube.is_youtube_url(url):
+            print(f"× YouTubeのURLではないためスキップします: {url}")
+            continue
+        try:
+            title = youtube.fetch_title(url)
+        except youtube.YouTubeError as e:
+            print(f"× {url}\n  {e}")
+            continue
+        report_name = youtube.to_folder_name(name or title)
+        if interactive:
+            print(f"\n「{title}」")
+            entered = input(f"  レポートの名前(そのままEnterで「{report_name}」): ").strip()
+            report_name = youtube.to_folder_name(entered) if entered else report_name
+        jobs.append((
+            f"{report_name}  ({url})",
+            lambda url=url, report_name=report_name: process_url(
+                url, report_name, settings, config.REPORT_DIR, config.WRITING_GUIDE_PATH, config.VIDEO_DIR, force=force,
+            ),
+        ))
+    return jobs
+
+
+def run(args: argparse.Namespace) -> int:
+    ensure_folders()
+    settings = load_settings_interactively()
+
+    if args.youtube or args.url:
+        interactive = not args.url
+        urls = [args.url] if args.url else ask_urls()
+        if not urls:
+            print("URLが入力されなかったので終了します。")
+            return 0
+        jobs = youtube_jobs(settings, urls, args.name, interactive, args.force)
+        if not jobs:
+            print("\n処理できるURLがありませんでした。上のメッセージを確認してください。")
+            return 1
+    else:
+        jobs = video_jobs(settings, args.video, args.force)
+        if not jobs:
+            print(f"「{config.VIDEO_DIR.name}」に動画がありません。動画を入れてから、もう一度実行してください。")
+            return 0
+    return run_jobs(jobs)
+
+
 def setup() -> int:
     ensure_folders()
     try:
@@ -90,17 +155,18 @@ def setup() -> int:
     except config.MissingKeysError as e:
         config.ask_and_save_keys(e.missing)
     print("\nセットアップが完了しました。")
-    print(f"「{config.VIDEO_DIR.name}」に動画を入れて「レポート作成」をダブルクリックしてください。")
+    print(f"「{config.VIDEO_DIR.name}」に動画を入れて「2_レポート作成」を、")
+    print("YouTubeの動画からは「3_YouTubeから作成」をダブルクリックしてください。")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return setup() if args.setup else run(args.video, args.force)
+        return setup() if args.setup else run(args)
     except config.MissingKeysError as e:
         print(f"{e}\n「初回セットアップ」を実行するか、.env にキーを記入してください。")
         return 1
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError):
         print("\n中断しました。")
         return 130

@@ -50,16 +50,25 @@ def format_timestamp(seconds: float) -> str:
 
 
 def transcribe(audio_path: Path, api_key: str) -> Transcript:
-    client = ElevenLabs(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS)
     with open(audio_path, "rb") as f:
-        result = client.speech_to_text.convert(
-            model_id=TRANSCRIBE_MODEL,
-            file=f,
-            language_code="ja",
-            diarize=True,
-            tag_audio_events=False,
-            timestamps_granularity="word",
-        )
+        return _convert(api_key, file=f)
+
+
+def transcribe_url(url: str, api_key: str) -> Transcript:
+    """YouTubeなどのURLを渡し、ダウンロードはElevenLabs側で行ってもらう。"""
+    return _convert(api_key, source_url=url)
+
+
+def _convert(api_key: str, **source) -> Transcript:
+    client = ElevenLabs(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS)
+    result = client.speech_to_text.convert(
+        model_id=TRANSCRIBE_MODEL,
+        language_code="ja",
+        diarize=True,
+        tag_audio_events=False,
+        timestamps_granularity="word",
+        **source,
+    )
     words = getattr(result, "words", None)
     if words is None:
         raise RuntimeError(f"文字起こし結果の形式が想定外です: {type(result).__name__}")

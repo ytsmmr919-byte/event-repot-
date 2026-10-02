@@ -103,3 +103,27 @@ def test_process_video_without_audio_track_fails_clearly(workspace, fakes):
     with pytest.raises(pipeline.audio.AudioExtractionError):
         pipeline.process_video(video, SETTINGS, report_dir, guide)
     assert fakes["transcribe"] == []
+
+
+def test_process_url_uses_memo_named_after_report_and_url_label(workspace, monkeypatch):
+    video_dir, report_dir, guide = workspace
+    (video_dir / "春の交流会.txt").write_text("話者2は講演者の佐藤さん", encoding="utf-8")
+    calls = {}
+
+    def fake_transcribe_url(url, api_key):
+        calls["transcribe"] = (url, api_key)
+        return Transcript(segments=[Segment("話者1", 0.0, 1.0, "始めます。")])
+
+    def fake_generate(user_message, api_key, model):
+        calls["message"] = user_message
+        return "# レポート\n"
+
+    monkeypatch.setattr(pipeline.transcribe, "transcribe_url", fake_transcribe_url)
+    monkeypatch.setattr(pipeline.report, "generate_report", fake_generate)
+
+    report_path = pipeline.process_url("https://youtu.be/abc", "春の交流会", SETTINGS, report_dir, guide, video_dir)
+
+    assert report_path == report_dir / "春の交流会" / "レポート.md"
+    assert calls["transcribe"] == ("https://youtu.be/abc", "el-key")
+    assert "話者2は講演者の佐藤さん" in calls["message"]
+    assert "<video_file>https://youtu.be/abc</video_file>" in calls["message"]

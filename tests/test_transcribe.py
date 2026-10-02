@@ -87,3 +87,27 @@ def test_transcribe_sends_expected_request_and_parses_response(tmp_path, monkeyp
     for field, value in [("model_id", "scribe_v2"), ("language_code", "ja"), ("diarize", "true"), ("timestamps_granularity", "word")]:
         assert f'name="{field}"\r\n\r\n{value}' in body
     assert [(s.speaker, s.text) for s in result.segments] == [("話者1", "こんにちは。"), ("話者2", "はい。")]
+
+
+def test_transcribe_url_sends_source_url_without_file(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read().decode("utf-8", errors="replace")
+        return httpx.Response(200, json={
+            "language_code": "jpn", "language_probability": 0.99, "text": "はい。",
+            "words": [{"text": "はい。", "start": 0.0, "end": 1.0, "type": "word", "speaker_id": "speaker_0", "logprob": 0.0}],
+        })
+
+    real_client = ElevenLabs
+    monkeypatch.setattr(
+        transcribe, "ElevenLabs",
+        lambda api_key, timeout: real_client(api_key=api_key, httpx_client=httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+
+    result = transcribe.transcribe_url("https://youtu.be/abc123", "test-key")
+
+    assert 'name="source_url"\r\n\r\nhttps://youtu.be/abc123' in captured["body"]
+    assert 'name="file"' not in captured["body"]
+    assert 'name="diarize"\r\n\r\ntrue' in captured["body"]
+    assert result.segments[0].text == "はい。"
